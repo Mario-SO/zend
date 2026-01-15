@@ -82,6 +82,47 @@ zend receive
 zend receive --port 8080
 ```
 
+## Using with Tailscale
+
+For transferring files between computers across the internet (different cities, countries, etc.), we recommend [Tailscale](https://tailscale.com) - a free mesh VPN that requires no port forwarding or firewall changes.
+
+### Setup (one time per device)
+
+```bash
+# Install Tailscale
+brew install tailscale   # macOS
+# or see https://tailscale.com/download for other platforms
+
+# Start and authenticate
+sudo tailscale up
+
+# Get your Tailscale IP
+tailscale ip -4
+# Example: 100.64.0.2
+```
+
+### Example: Country A to Country B
+
+**Friend in Country B (receiver):**
+```bash
+tailscale ip -4              # Note: 100.64.0.2
+zend id show                 # Share the public_key with sender
+zend receive
+```
+
+**You in Country A (sender):**
+```bash
+zend peer add country_b "FRIENDS_PUBLIC_KEY" "100.64.0.2:7654"
+zend send vacation_photos.zip country_b
+```
+
+### Why Tailscale?
+
+- **No port forwarding** - works through NAT and firewalls automatically
+- **Private network** - the `100.x.x.x` IPs are only reachable by your Tailscale devices
+- **Double encryption** - Tailscale (WireGuard) + zend (Noise IK)
+- **Free** for personal use (up to 100 devices)
+
 ## JSON Events
 
 | Event | Fields | Description |
