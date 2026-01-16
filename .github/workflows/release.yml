@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            artifact: zend-linux-x86_64
+          - os: macos-latest
+            target: aarch64-macos
+            artifact: zend-darwin-aarch64
+          # Add more targets as needed:
+          # - os: macos-13
+          #   target: x86_64-macos
+          #   artifact: zend-darwin-x86_64
+          # - os: windows-latest
+          #   target: x86_64-windows
+          #   artifact: zend-windows-x86_64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp zig-out/bin/zend.exe dist/${{ matrix.artifact }}
+          else
+            cp zig-out/bin/zend dist/${{ matrix.artifact }}
+          fi
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          sha256sum ${{ matrix.artifact }} > SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Combine checksums
+        run: |
+          mkdir -p release
+          # Move all binaries to release dir
+          for dir in artifacts/*/; do
+            cp "$dir"/* release/ 2>/dev/null || true
+          done
+          # Combine all SHA256SUMS into one
+          cat artifacts/*/SHA256SUMS > release/SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

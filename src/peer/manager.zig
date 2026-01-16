@@ -7,6 +7,12 @@
 const std = @import("std");
 const keypair = @import("../identity/keypair.zig");
 
+/// Trust state for a peer
+pub const TrustLevel = enum {
+    trusted,
+    blocked,
+};
+
 /// A trusted peer
 pub const Peer = struct {
     /// User-friendly name
@@ -17,6 +23,8 @@ pub const Peer = struct {
     address: []const u8,
     /// SHA-256 fingerprint (hex-encoded, 64 chars)
     fingerprint: [keypair.fingerprint_len]u8,
+    /// Trust state
+    trust: TrustLevel,
     /// Unix timestamp of first contact
     first_seen: i64,
     /// Unix timestamp of last contact
@@ -35,6 +43,7 @@ pub const Peer = struct {
             .public_key = self.public_key,
             .address = try allocator.dupe(u8, self.address),
             .fingerprint = self.fingerprint,
+            .trust = self.trust,
             .first_seen = self.first_seen,
             .last_seen = self.last_seen,
         };
@@ -82,6 +91,7 @@ pub const PeerManager = struct {
             .public_key = public_key,
             .address = try self.allocator.dupe(u8, address),
             .fingerprint = fingerprint,
+            .trust = .trusted,
             .first_seen = now,
             .last_seen = now,
         };
@@ -126,6 +136,17 @@ pub const PeerManager = struct {
         for (self.peers.items) |*peer| {
             if (std.mem.eql(u8, peer.name, name)) {
                 peer.last_seen = std.time.timestamp();
+                return;
+            }
+        }
+        return error.PeerNotFound;
+    }
+
+    /// Update trust state for a peer
+    pub fn updateTrust(self: *PeerManager, name: []const u8, trust: TrustLevel) !void {
+        for (self.peers.items) |*peer| {
+            if (std.mem.eql(u8, peer.name, name)) {
+                peer.trust = trust;
                 return;
             }
         }

@@ -11,6 +11,7 @@ pub const EventType = enum {
     identity_loaded,
     peer_added,
     peer_removed,
+    peer_trust_updated,
     peer_list,
     connecting,
     listening,
@@ -171,6 +172,11 @@ pub fn emitPeerAdded(name: []const u8, fingerprint: []const u8) !void {
 /// Emit peer removed event
 pub fn emitPeerRemoved(name: []const u8) !void {
     try writeEvent(.peer_removed, .{ .name = name });
+}
+
+/// Emit peer trust updated event
+pub fn emitPeerTrustUpdated(name: []const u8, trust: []const u8) !void {
+    try writeEvent(.peer_trust_updated, .{ .name = name, .trust = trust });
 }
 
 /// Emit connecting event

@@ -6,6 +6,7 @@
 //!   peer add            Add a trusted peer
 //!   peer list           List all peers
 //!   peer remove         Remove a peer
+//!   peer trust          Update peer trust state
 //!   send <file> <peer>  Send a file to a peer
 //!   receive             Listen for incoming files
 //!
@@ -60,7 +61,7 @@ pub fn main() !void {
         }
     } else if (std.mem.eql(u8, command, "peer")) {
         if (args.len < 3) {
-            try json.emitError("usage", "Usage: zend peer <add|list|remove>");
+            try json.emitError("usage", "Usage: zend peer <add|list|remove|trust>");
             std.process.exit(1);
         }
         const subcommand = args[2];
@@ -70,8 +71,10 @@ pub fn main() !void {
             try cmdPeerList(allocator);
         } else if (std.mem.eql(u8, subcommand, "remove")) {
             try cmdPeerRemove(allocator, args[3..]);
+        } else if (std.mem.eql(u8, subcommand, "trust")) {
+            try cmdPeerTrust(allocator, args[3..]);
         } else {
-            try json.emitError("unknown_command", "Unknown peer command. Use: add, list, remove");
+            try json.emitError("unknown_command", "Unknown peer command. Use: add, list, remove, trust");
             std.process.exit(1);
         }
     } else if (std.mem.eql(u8, command, "send")) {
@@ -226,6 +229,11 @@ fn cmdPeerList(allocator: std.mem.Allocator) !void {
         try writer.writeAll(&peer.fingerprint);
         try writer.writeAll("\",");
 
+        // Trust
+        try writer.writeAll("\"trust\":\"");
+        try writer.writeAll(@tagName(peer.trust));
+        try writer.writeAll("\",");
+
         // Timestamps
         try writer.print("\"first_seen\":{d},", .{peer.first_seen});
         try writer.print("\"last_seen\":{d}", .{peer.last_seen});
@@ -274,6 +282,47 @@ fn cmdPeerRemove(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try json.emitPeerRemoved(name);
 }
 
+/// Update peer trust state
+fn cmdPeerTrust(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2) {
+        try json.emitError("usage", "Usage: zend peer trust <name> <trusted|blocked>");
+        std.process.exit(1);
+    }
+
+    const name = args[0];
+    const trust_value = args[1];
+
+    const trust = if (std.mem.eql(u8, trust_value, "trusted"))
+        peer_manager.TrustLevel.trusted
+    else if (std.mem.eql(u8, trust_value, "blocked") or std.mem.eql(u8, trust_value, "untrusted"))
+        peer_manager.TrustLevel.blocked
+    else {
+        try json.emitError("invalid_trust", "Trust must be trusted or blocked");
+        std.process.exit(1);
+    };
+
+    var manager = peer_manager.PeerManager.init(allocator);
+    defer manager.deinit();
+
+    peer_storage.loadPeers(allocator, &manager) catch {};
+
+    manager.updateTrust(name, trust) catch |err| {
+        if (err == error.PeerNotFound) {
+            try json.emitError("peer_not_found", "No peer found with this name");
+        } else {
+            try json.emitError("trust_error", @errorName(err));
+        }
+        std.process.exit(1);
+    };
+
+    peer_storage.savePeers(allocator, &manager) catch |err| {
+        try json.emitError("save_error", @errorName(err));
+        std.process.exit(1);
+    };
+
+    try json.emitPeerTrustUpdated(name, @tagName(trust));
+}
+
 /// Send a file to a peer
 fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
@@ -306,6 +355,10 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try json.emitError("peer_not_found", "No peer found with this name");
         std.process.exit(1);
     };
+    if (peer.trust == .blocked) {
+        try json.emitError("peer_blocked", "Peer is marked untrusted");
+        std.process.exit(1);
+    }
 
     // Get file size
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {

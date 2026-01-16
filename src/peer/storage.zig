@@ -69,6 +69,11 @@ pub fn savePeers(allocator: std.mem.Allocator, peer_manager: *const manager.Peer
         try writer.writeAll(&peer.fingerprint);
         try writer.writeAll("\",\n");
 
+        // Trust
+        try writer.writeAll("    \"trust\": \"");
+        try writer.writeAll(@tagName(peer.trust));
+        try writer.writeAll("\",\n");
+
         // Timestamps
         try writer.print("    \"first_seen\": {d},\n", .{peer.first_seen});
         try writer.print("    \"last_seen\": {d}\n", .{peer.last_seen});
@@ -123,6 +128,7 @@ pub fn loadPeers(allocator: std.mem.Allocator, peer_manager: *manager.PeerManage
         const address_val = obj.get("address") orelse continue;
         const first_seen_val = obj.get("first_seen") orelse continue;
         const last_seen_val = obj.get("last_seen") orelse continue;
+        const trust_val = obj.get("trust");
 
         if (name_val != .string or pubkey_val != .string or address_val != .string) continue;
         if (first_seen_val != .integer or last_seen_val != .integer) continue;
@@ -134,17 +140,34 @@ pub fn loadPeers(allocator: std.mem.Allocator, peer_manager: *manager.PeerManage
         // Compute fingerprint
         const fingerprint = keypair.computeFingerprint(&public_key);
 
+        const trust = parseTrust(trust_val);
+
         const peer = manager.Peer{
             .name = try allocator.dupe(u8, name_val.string),
             .public_key = public_key,
             .address = try allocator.dupe(u8, address_val.string),
             .fingerprint = fingerprint,
+            .trust = trust,
             .first_seen = first_seen_val.integer,
             .last_seen = last_seen_val.integer,
         };
 
         try peer_manager.peers.append(peer_manager.allocator, peer);
     }
+}
+
+fn parseTrust(value: ?std.json.Value) manager.TrustLevel {
+    if (value) |val| {
+        if (val == .string) {
+            if (std.mem.eql(u8, val.string, "blocked") or std.mem.eql(u8, val.string, "untrusted")) {
+                return .blocked;
+            }
+            if (std.mem.eql(u8, val.string, "trusted")) {
+                return .trusted;
+            }
+        }
+    }
+    return .trusted;
 }
 
 /// Write a JSON-escaped string

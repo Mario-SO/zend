@@ -62,6 +62,9 @@ Output:
 # Add a trusted peer
 zend peer add alice "their_public_key_base64" "192.168.1.100:7654"
 
+# Update trust state
+zend peer trust alice blocked
+
 # List all peers
 zend peer list
 
@@ -131,6 +134,7 @@ zend send vacation_photos.zip country_b
 | `identity_loaded` | `public_key`, `fingerprint` | Identity loaded from disk |
 | `peer_added` | `name`, `fingerprint` | Peer added to trusted list |
 | `peer_removed` | `name` | Peer removed |
+| `peer_trust_updated` | `name`, `trust` | Peer trust updated |
 | `peer_list` | `peers` | List of all peers |
 | `connecting` | `peer`, `address` | Connecting to peer |
 | `listening` | `port` | Listening for connections |
