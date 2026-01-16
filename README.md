@@ -93,8 +93,7 @@ For transferring files between computers across the internet (different cities, 
 
 ```bash
 # Install Tailscale
-brew install tailscale   # macOS
-# or see https://tailscale.com/download for other platforms
+# see https://tailscale.com/download
 
 # Start and authenticate
 sudo tailscale up
