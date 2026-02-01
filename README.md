@@ -8,7 +8,7 @@ A secure peer-to-peer file transfer engine written in Zig.
 - **Secure transport** using Noise IK protocol
 - **Peer authentication** with TOFU (Trust On First Use)
 - **Encrypted file transfer** with integrity verification
-- **JSON output** for IPC with hermes
+- **JSON output** for IPC with [hermes](https://github.com/Mario-SO/hermes)
 
 ## Cryptographic Primitives
 
