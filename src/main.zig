@@ -409,6 +409,7 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
 /// Receive files from peers
 fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var port: u16 = tcp.default_port;
+    var output_dir: []const u8 = ".";
 
     // Parse options
     var i: usize = 0;
@@ -423,6 +424,13 @@ fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 try json.emitError("invalid_port", "Invalid port number");
                 std.process.exit(1);
             };
+        } else if (std.mem.eql(u8, args[i], "--output-dir")) {
+            if (i + 1 >= args.len) {
+                try json.emitError("usage", "--output-dir requires a path");
+                std.process.exit(1);
+            }
+            i += 1;
+            output_dir = args[i];
         }
     }
 
@@ -444,39 +452,46 @@ fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
     };
     defer server.close();
 
+    // Ensure output directory exists.
+    std.fs.cwd().makePath(output_dir) catch |err| {
+        if (err != error.PathAlreadyExists) {
+            try json.emitError("output_dir_error", @errorName(err));
+            std.process.exit(1);
+        }
+    };
+
     try json.emitListening(server.getPort());
 
-    // Accept one connection
-    var secure_channel = zend.acceptConnection(&server, &identity) catch |err| {
-        try json.emitError("accept_error", @errorName(err));
-        std.process.exit(1);
-    };
-    defer secure_channel.close();
+    // Receive loop: keep listening for sequential transfers until process is terminated.
+    while (true) {
+        var secure_channel = zend.acceptConnection(&server, &identity) catch |err| {
+            try json.emitError("accept_error", @errorName(err));
+            continue;
+        };
+        defer secure_channel.close();
 
-    // Get remote fingerprint
-    const remote_fp = secure_channel.getRemoteFingerprint();
-    try json.emitHandshakeComplete(&remote_fp);
+        // Get remote fingerprint
+        const remote_fp = secure_channel.getRemoteFingerprint();
+        try json.emitHandshakeComplete(&remote_fp);
 
-    // Receive file to current directory
-    const output_dir = ".";
+        g_total_size = 0;
+        g_last_progress_percent = 0;
 
-    g_total_size = 0;
-    g_last_progress_percent = 0;
+        const filename = transfer.receiveFile(&secure_channel, output_dir, allocator, progressCallback) catch |err| {
+            try json.emitError("receive_error", @errorName(err));
+            continue;
+        };
+        defer allocator.free(filename);
 
-    const filename = transfer.receiveFile(&secure_channel, output_dir, allocator, progressCallback) catch |err| {
-        try json.emitError("receive_error", @errorName(err));
-        std.process.exit(1);
-    };
-    defer allocator.free(filename);
+        // Compute hash of received file
+        const hash = transfer.computeFileHash(filename) catch |err| {
+            try json.emitError("hash_error", @errorName(err));
+            continue;
+        };
+        const hash_hex = std.fmt.bytesToHex(hash, .lower);
 
-    // Compute hash of received file
-    const hash = transfer.computeFileHash(filename) catch |err| {
-        try json.emitError("hash_error", @errorName(err));
-        std.process.exit(1);
-    };
-    const hash_hex = std.fmt.bytesToHex(hash, .lower);
-
-    try json.emitTransferComplete(filename, &hash_hex);
+        try json.emitTransferComplete(filename, &hash_hex);
+    }
 }
 
 /// Progress callback for file transfers
