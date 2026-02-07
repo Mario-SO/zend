@@ -1,6 +1,6 @@
 .{
     .name = .zend,
-    .version = "0.0.0",
+    .version = "0.0.1",
     .fingerprint = 0xda7b7547375dbc15, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{

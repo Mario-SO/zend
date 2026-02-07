@@ -15,18 +15,18 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-linux
-            artifact: zend-linux-x86_64
+            platform: linux
+            arch: x86_64
           - os: macos-latest
-            target: aarch64-macos
-            artifact: zend-darwin-aarch64
+            platform: darwin
+            arch: aarch64
           # Add more targets as needed:
           # - os: macos-13
-          #   target: x86_64-macos
-          #   artifact: zend-darwin-x86_64
+          #   platform: darwin
+          #   arch: x86_64
           # - os: windows-latest
-          #   target: x86_64-windows
-          #   artifact: zend-windows-x86_64.exe
+          #   platform: windows
+          #   arch: x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -43,24 +43,28 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Rename artifact
+      - name: Prepare versioned artifact
+        id: artifact
         run: |
           mkdir -p dist
+          ARTIFACT="zend-${{ steps.version.outputs.version }}-${{ matrix.platform }}-${{ matrix.arch }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp zig-out/bin/zend.exe dist/${{ matrix.artifact }}
+            cp zig-out/bin/zend.exe "dist/${ARTIFACT}.exe"
+            ARTIFACT="${ARTIFACT}.exe"
           else
-            cp zig-out/bin/zend dist/${{ matrix.artifact }}
+            cp zig-out/bin/zend "dist/${ARTIFACT}"
           fi
+          echo "name=${ARTIFACT}" >> $GITHUB_OUTPUT
 
       - name: Generate checksum
         run: |
           cd dist
-          sha256sum ${{ matrix.artifact }} > SHA256SUMS
+          shasum -a 256 ${{ steps.artifact.outputs.name }} > SHA256SUMS
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ steps.artifact.outputs.name }}
           path: dist/
 
   release:
