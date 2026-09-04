@@ -72,6 +72,7 @@ pub const PeerManager = struct {
     /// Add a new peer
     pub fn addPeer(
         self: *PeerManager,
+        io: std.Io,
         name: []const u8,
         public_key: [keypair.ed25519_public_key_len]u8,
         address: []const u8,
@@ -84,7 +85,7 @@ pub const PeerManager = struct {
         // Compute fingerprint from public key
         const fingerprint = keypair.computeFingerprint(&public_key);
 
-        const now = std.time.timestamp();
+        const now = std.Io.Timestamp.now(io, .real).toSeconds();
 
         const peer = Peer{
             .name = try self.allocator.dupe(u8, name),
@@ -132,10 +133,10 @@ pub const PeerManager = struct {
     }
 
     /// Update last_seen timestamp for a peer
-    pub fn updateLastSeen(self: *PeerManager, name: []const u8) !void {
+    pub fn updateLastSeen(self: *PeerManager, io: std.Io, name: []const u8) !void {
         for (self.peers.items) |*peer| {
             if (std.mem.eql(u8, peer.name, name)) {
-                peer.last_seen = std.time.timestamp();
+                peer.last_seen = std.Io.Timestamp.now(io, .real).toSeconds();
                 return;
             }
         }
@@ -178,9 +179,9 @@ test "peer manager add and find" {
 
     // Generate a test public key
     var public_key: [keypair.ed25519_public_key_len]u8 = undefined;
-    std.crypto.random.bytes(&public_key);
+    std.testing.io.random(&public_key);
 
-    try manager.addPeer("alice", public_key, "192.168.1.100:7654");
+    try manager.addPeer(std.testing.io, "alice", public_key, "192.168.1.100:7654");
 
     const found = manager.findByName("alice");
     try std.testing.expect(found != null);
@@ -194,12 +195,12 @@ test "peer manager duplicate name rejected" {
     defer manager.deinit();
 
     var public_key: [keypair.ed25519_public_key_len]u8 = undefined;
-    std.crypto.random.bytes(&public_key);
+    std.testing.io.random(&public_key);
 
-    try manager.addPeer("alice", public_key, "192.168.1.100:7654");
+    try manager.addPeer(std.testing.io, "alice", public_key, "192.168.1.100:7654");
 
     // Second add with same name should fail
-    const result = manager.addPeer("alice", public_key, "192.168.1.101:7654");
+    const result = manager.addPeer(std.testing.io, "alice", public_key, "192.168.1.101:7654");
     try std.testing.expectError(error.PeerAlreadyExists, result);
 }
 
@@ -209,9 +210,9 @@ test "peer manager remove" {
     defer manager.deinit();
 
     var public_key: [keypair.ed25519_public_key_len]u8 = undefined;
-    std.crypto.random.bytes(&public_key);
+    std.testing.io.random(&public_key);
 
-    try manager.addPeer("alice", public_key, "192.168.1.100:7654");
+    try manager.addPeer(std.testing.io, "alice", public_key, "192.168.1.100:7654");
     try manager.removePeer("alice");
 
     try std.testing.expect(manager.findByName("alice") == null);
@@ -223,9 +224,9 @@ test "peer fingerprint verification" {
     defer manager.deinit();
 
     var public_key: [keypair.ed25519_public_key_len]u8 = undefined;
-    std.crypto.random.bytes(&public_key);
+    std.testing.io.random(&public_key);
 
-    try manager.addPeer("alice", public_key, "192.168.1.100:7654");
+    try manager.addPeer(std.testing.io, "alice", public_key, "192.168.1.100:7654");
 
     const fingerprint = keypair.computeFingerprint(&public_key);
     try std.testing.expect(try manager.verifyFingerprint("alice", fingerprint));

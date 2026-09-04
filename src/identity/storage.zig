@@ -13,32 +13,25 @@ pub const config_dir_name = ".zend";
 pub const identity_file_name = "identity";
 
 /// Get the zend config directory path
-pub fn getConfigDir(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        if (err == error.EnvironmentVariableNotFound) {
-            return error.HomeNotFound;
-        }
-        return err;
-    };
-    defer allocator.free(home);
-
+pub fn getConfigDir(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]u8 {
+    const home = environ.get("HOME") orelse return error.HomeNotFound;
     return std.fs.path.join(allocator, &.{ home, config_dir_name });
 }
 
 /// Get the identity file path
-pub fn getIdentityPath(allocator: std.mem.Allocator) ![]u8 {
-    const config_dir = try getConfigDir(allocator);
+pub fn getIdentityPath(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]u8 {
+    const config_dir = try getConfigDir(environ, allocator);
     defer allocator.free(config_dir);
 
     return std.fs.path.join(allocator, &.{ config_dir, identity_file_name });
 }
 
 /// Check if identity exists
-pub fn identityExists(allocator: std.mem.Allocator) !bool {
-    const path = try getIdentityPath(allocator);
+pub fn identityExists(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !bool {
+    const path = try getIdentityPath(environ, allocator);
     defer allocator.free(path);
 
-    std.fs.cwd().access(path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             return false;
         }
@@ -48,38 +41,38 @@ pub fn identityExists(allocator: std.mem.Allocator) !bool {
 }
 
 /// Save identity to disk
-pub fn saveIdentity(allocator: std.mem.Allocator, identity: *const keypair.Identity) !void {
+pub fn saveIdentity(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, identity: *const keypair.Identity) !void {
     // Ensure config directory exists
-    const config_dir = try getConfigDir(allocator);
+    const config_dir = try getConfigDir(environ, allocator);
     defer allocator.free(config_dir);
 
-    std.fs.cwd().makePath(config_dir) catch |err| {
-        if (err != error.PathAlreadyExists) {
-            return err;
-        }
-    };
+    try std.Io.Dir.cwd().createDirPath(io, config_dir);
 
     // Get identity file path
-    const path = try getIdentityPath(allocator);
+    const path = try getIdentityPath(environ, allocator);
     defer allocator.free(path);
 
     // Write secret key to file (plaintext)
-    const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
-    defer file.close();
+    const permissions: std.Io.File.Permissions = if (comptime std.Io.File.Permissions.has_executable_bit)
+        @enumFromInt(0o600)
+    else
+        .default_file;
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{ .permissions = permissions });
+    defer file.close(io);
 
-    try file.writeAll(&identity.secret_key);
+    try file.writeStreamingAll(io, &identity.secret_key);
 }
 
 /// Load identity from disk
-pub fn loadIdentity(allocator: std.mem.Allocator) !keypair.Identity {
-    const path = try getIdentityPath(allocator);
+pub fn loadIdentity(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !keypair.Identity {
+    const path = try getIdentityPath(environ, allocator);
     defer allocator.free(path);
 
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
     var secret_key: [keypair.ed25519_secret_key_len]u8 = undefined;
-    const bytes_read = try file.readAll(&secret_key);
+    const bytes_read = try file.readPositionalAll(io, &secret_key, 0);
 
     if (bytes_read != keypair.ed25519_secret_key_len) {
         return error.InvalidIdentityFile;
@@ -97,17 +90,20 @@ pub fn loadIdentity(allocator: std.mem.Allocator) !keypair.Identity {
 }
 
 /// Delete identity from disk
-pub fn deleteIdentity(allocator: std.mem.Allocator) !void {
-    const path = try getIdentityPath(allocator);
+pub fn deleteIdentity(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !void {
+    const path = try getIdentityPath(environ, allocator);
     defer allocator.free(path);
 
-    try std.fs.cwd().deleteFile(path);
+    try std.Io.Dir.cwd().deleteFile(io, path);
 }
 
 // Tests
 test "config dir path" {
     const allocator = std.testing.allocator;
-    const path = try getConfigDir(allocator);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "/tmp/zend-test-home");
+    const path = try getConfigDir(&environ, allocator);
     defer allocator.free(path);
 
     try std.testing.expect(std.mem.endsWith(u8, path, ".zend"));
@@ -115,7 +111,10 @@ test "config dir path" {
 
 test "identity path" {
     const allocator = std.testing.allocator;
-    const path = try getIdentityPath(allocator);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "/tmp/zend-test-home");
+    const path = try getIdentityPath(&environ, allocator);
     defer allocator.free(path);
 
     try std.testing.expect(std.mem.endsWith(u8, path, "identity"));

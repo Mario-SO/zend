@@ -27,54 +27,57 @@ pub const FileOffer = struct {
 
     /// Serialize to buffer
     pub fn serialize(self: *const FileOffer, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         // Message type
         try writer.writeByte(@intFromEnum(MessageType.file_offer));
 
         // Filename (length-prefixed)
         if (self.filename.len > std.math.maxInt(u16)) return error.FilenameTooLong;
-        try writer.writeInt(u16, @intCast(self.filename.len), .big);
+        var int_buf: [8]u8 = undefined;
+        std.mem.writeInt(u16, int_buf[0..2], @intCast(self.filename.len), .big);
+        try writer.writeAll(int_buf[0..2]);
         try writer.writeAll(self.filename);
 
         // Size
-        try writer.writeInt(u64, self.size, .big);
+        std.mem.writeInt(u64, &int_buf, self.size, .big);
+        try writer.writeAll(&int_buf);
 
         // Hash
         try writer.writeAll(&self.hash);
 
         // Chunk info
-        try writer.writeInt(u32, self.chunk_size, .big);
-        try writer.writeInt(u32, self.total_chunks, .big);
+        std.mem.writeInt(u32, int_buf[0..4], self.chunk_size, .big);
+        try writer.writeAll(int_buf[0..4]);
+        std.mem.writeInt(u32, int_buf[0..4], self.total_chunks, .big);
+        try writer.writeAll(int_buf[0..4]);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     /// Deserialize from buffer
     pub fn deserialize(data: []const u8, allocator: std.mem.Allocator) !FileOffer {
-        var fbs = std.io.fixedBufferStream(data);
-        const reader = fbs.reader();
+        var reader = std.Io.Reader.fixed(data);
 
         // Skip message type (already verified)
-        _ = try reader.readByte();
+        _ = try reader.takeByte();
 
         // Filename
-        const filename_len = try reader.readInt(u16, .big);
+        const filename_len = try reader.takeInt(u16, .big);
         const filename = try allocator.alloc(u8, filename_len);
         errdefer allocator.free(filename);
-        _ = try reader.readAll(filename);
+        try reader.readSliceAll(filename);
 
         // Size
-        const size = try reader.readInt(u64, .big);
+        const size = try reader.takeInt(u64, .big);
 
         // Hash
         var hash: [Sha256.digest_length]u8 = undefined;
-        _ = try reader.readAll(&hash);
+        try reader.readSliceAll(&hash);
 
         // Chunk info
-        const chunk_size = try reader.readInt(u32, .big);
-        const total_chunks = try reader.readInt(u32, .big);
+        const chunk_size = try reader.takeInt(u32, .big);
+        const total_chunks = try reader.takeInt(u32, .big);
 
         return FileOffer{
             .filename = filename,
@@ -105,27 +108,27 @@ pub const FileReject = struct {
     reason: []const u8,
 
     pub fn serialize(self: *const FileReject, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         try writer.writeByte(@intFromEnum(MessageType.file_reject));
 
         if (self.reason.len > std.math.maxInt(u16)) return error.ReasonTooLong;
-        try writer.writeInt(u16, @intCast(self.reason.len), .big);
+        var len_buf: [2]u8 = undefined;
+        std.mem.writeInt(u16, &len_buf, @intCast(self.reason.len), .big);
+        try writer.writeAll(&len_buf);
         try writer.writeAll(self.reason);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     pub fn deserialize(data: []const u8, allocator: std.mem.Allocator) !FileReject {
-        var fbs = std.io.fixedBufferStream(data);
-        const reader = fbs.reader();
+        var reader = std.Io.Reader.fixed(data);
 
-        _ = try reader.readByte(); // Skip type
+        _ = try reader.takeByte(); // Skip type
 
-        const reason_len = try reader.readInt(u16, .big);
+        const reason_len = try reader.takeInt(u16, .big);
         const reason = try allocator.alloc(u8, reason_len);
-        _ = try reader.readAll(reason);
+        try reader.readSliceAll(reason);
 
         return FileReject{ .reason = reason };
     }
@@ -141,27 +144,28 @@ pub const Chunk = struct {
     data: []const u8,
 
     pub fn serialize(self: *const Chunk, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         try writer.writeByte(@intFromEnum(MessageType.chunk));
-        try writer.writeInt(u32, self.index, .big);
-        try writer.writeInt(u32, @intCast(self.data.len), .big);
+        var int_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &int_buf, self.index, .big);
+        try writer.writeAll(&int_buf);
+        std.mem.writeInt(u32, &int_buf, @intCast(self.data.len), .big);
+        try writer.writeAll(&int_buf);
         try writer.writeAll(self.data);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     pub fn deserialize(data: []const u8) !Chunk {
-        var fbs = std.io.fixedBufferStream(data);
-        const reader = fbs.reader();
+        var reader = std.Io.Reader.fixed(data);
 
-        _ = try reader.readByte(); // Skip type
+        _ = try reader.takeByte(); // Skip type
 
-        const index = try reader.readInt(u32, .big);
-        const chunk_len = try reader.readInt(u32, .big);
+        const index = try reader.takeInt(u32, .big);
+        const chunk_len = try reader.takeInt(u32, .big);
 
-        const pos = fbs.pos;
+        const pos = reader.seek;
         if (data.len < pos + chunk_len) return error.UnexpectedEof;
 
         return Chunk{
@@ -176,21 +180,21 @@ pub const ChunkAck = struct {
     index: u32,
 
     pub fn serialize(self: *const ChunkAck, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         try writer.writeByte(@intFromEnum(MessageType.chunk_ack));
-        try writer.writeInt(u32, self.index, .big);
+        var index_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &index_buf, self.index, .big);
+        try writer.writeAll(&index_buf);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     pub fn deserialize(data: []const u8) !ChunkAck {
-        var fbs = std.io.fixedBufferStream(data);
-        const reader = fbs.reader();
+        var reader = std.Io.Reader.fixed(data);
 
-        _ = try reader.readByte(); // Skip type
-        const index = try reader.readInt(u32, .big);
+        _ = try reader.takeByte(); // Skip type
+        const index = try reader.takeInt(u32, .big);
 
         return ChunkAck{ .index = index };
     }
@@ -201,13 +205,12 @@ pub const TransferComplete = struct {
     hash: [Sha256.digest_length]u8,
 
     pub fn serialize(self: *const TransferComplete, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         try writer.writeByte(@intFromEnum(MessageType.transfer_complete));
         try writer.writeAll(&self.hash);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     pub fn deserialize(data: []const u8) !TransferComplete {
@@ -226,35 +229,36 @@ pub const ErrorMessage = struct {
     message: []const u8,
 
     pub fn serialize(self: *const ErrorMessage, buffer: []u8) ![]u8 {
-        var fbs = std.io.fixedBufferStream(buffer);
-        const writer = fbs.writer();
+        var writer = std.Io.Writer.fixed(buffer);
 
         try writer.writeByte(@intFromEnum(MessageType.@"error"));
 
-        try writer.writeInt(u16, @intCast(self.code.len), .big);
+        var len_buf: [2]u8 = undefined;
+        std.mem.writeInt(u16, &len_buf, @intCast(self.code.len), .big);
+        try writer.writeAll(&len_buf);
         try writer.writeAll(self.code);
 
-        try writer.writeInt(u16, @intCast(self.message.len), .big);
+        std.mem.writeInt(u16, &len_buf, @intCast(self.message.len), .big);
+        try writer.writeAll(&len_buf);
         try writer.writeAll(self.message);
 
-        return fbs.getWritten();
+        return writer.buffered();
     }
 
     pub fn deserialize(data: []const u8, allocator: std.mem.Allocator) !ErrorMessage {
-        var fbs = std.io.fixedBufferStream(data);
-        const reader = fbs.reader();
+        var reader = std.Io.Reader.fixed(data);
 
-        _ = try reader.readByte(); // Skip type
+        _ = try reader.takeByte(); // Skip type
 
-        const code_len = try reader.readInt(u16, .big);
+        const code_len = try reader.takeInt(u16, .big);
         const code = try allocator.alloc(u8, code_len);
         errdefer allocator.free(code);
-        _ = try reader.readAll(code);
+        try reader.readSliceAll(code);
 
-        const msg_len = try reader.readInt(u16, .big);
+        const msg_len = try reader.takeInt(u16, .big);
         const message = try allocator.alloc(u8, msg_len);
         errdefer allocator.free(message);
-        _ = try reader.readAll(message);
+        try reader.readSliceAll(message);
 
         return ErrorMessage{ .code = code, .message = message };
     }
@@ -268,7 +272,7 @@ pub const ErrorMessage = struct {
 /// Parse message type from first byte
 pub fn parseMessageType(data: []const u8) !MessageType {
     if (data.len < 1) return error.EmptyMessage;
-    return std.meta.intToEnum(MessageType, data[0]) catch error.UnknownMessageType;
+    return std.enums.fromInt(MessageType, data[0]) orelse error.UnknownMessageType;
 }
 
 // Tests

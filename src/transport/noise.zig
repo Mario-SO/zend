@@ -193,13 +193,14 @@ pub const HandshakeState = struct {
 
     /// Initialize handshake as initiator (we know their static key)
     pub fn initInitiator(
+        io: std.Io,
         local_static_secret: [key_size]u8,
         remote_static_public: [key_size]u8,
     ) HandshakeState {
         var state = HandshakeState{
             .symmetric = SymmetricState.init(),
             .local_static = local_static_secret,
-            .local_ephemeral = X25519.KeyPair.generate(),
+            .local_ephemeral = X25519.KeyPair.generate(io),
             .remote_static = remote_static_public,
             .remote_ephemeral = null,
             .is_initiator = true,
@@ -212,14 +213,14 @@ pub const HandshakeState = struct {
     }
 
     /// Initialize handshake as responder
-    pub fn initResponder(local_static_secret: [key_size]u8) HandshakeState {
+    pub fn initResponder(io: std.Io, local_static_secret: [key_size]u8) HandshakeState {
         // Compute our public key
         const local_public = X25519.recoverPublicKey(local_static_secret) catch unreachable;
 
         var state = HandshakeState{
             .symmetric = SymmetricState.init(),
             .local_static = local_static_secret,
-            .local_ephemeral = X25519.KeyPair.generate(),
+            .local_ephemeral = X25519.KeyPair.generate(io),
             .remote_static = null,
             .remote_ephemeral = null,
             .is_initiator = false,
@@ -392,14 +393,14 @@ pub const message2_size: usize = key_size;
 // Tests
 test "noise ik handshake" {
     // Generate static keys for both parties
-    var initiator_static = X25519.KeyPair.generate();
-    const responder_static = X25519.KeyPair.generate();
+    var initiator_static = X25519.KeyPair.generate(std.testing.io);
+    const responder_static = X25519.KeyPair.generate(std.testing.io);
 
     // Initiator knows responder's public key
-    var initiator = HandshakeState.initInitiator(initiator_static.secret_key, responder_static.public_key);
+    var initiator = HandshakeState.initInitiator(std.testing.io, initiator_static.secret_key, responder_static.public_key);
     defer initiator.wipe();
 
-    var responder = HandshakeState.initResponder(responder_static.secret_key);
+    var responder = HandshakeState.initResponder(std.testing.io, responder_static.secret_key);
     defer responder.wipe();
 
     // Message 1: initiator -> responder

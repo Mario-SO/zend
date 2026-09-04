@@ -30,13 +30,12 @@ var g_total_size: u64 = 0;
 var g_last_progress_percent: u64 = 0;
 var g_peer_name: []const u8 = "";
 
-pub fn main() !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const environ = init.environ_map;
+    const allocator = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    json.init(io);
 
     if (args.len < 2) {
         try emitUsageError();
@@ -52,9 +51,9 @@ pub fn main() !void {
         }
         const subcommand = args[2];
         if (std.mem.eql(u8, subcommand, "init")) {
-            try cmdIdInit(allocator);
+            try cmdIdInit(io, environ, allocator);
         } else if (std.mem.eql(u8, subcommand, "show")) {
-            try cmdIdShow(allocator);
+            try cmdIdShow(io, environ, allocator);
         } else {
             try json.emitError("unknown_command", "Unknown id command. Use: init, show");
             std.process.exit(1);
@@ -66,21 +65,21 @@ pub fn main() !void {
         }
         const subcommand = args[2];
         if (std.mem.eql(u8, subcommand, "add")) {
-            try cmdPeerAdd(allocator, args[3..]);
+            try cmdPeerAdd(io, environ, allocator, args[3..]);
         } else if (std.mem.eql(u8, subcommand, "list")) {
-            try cmdPeerList(allocator);
+            try cmdPeerList(io, environ, allocator);
         } else if (std.mem.eql(u8, subcommand, "remove")) {
-            try cmdPeerRemove(allocator, args[3..]);
+            try cmdPeerRemove(io, environ, allocator, args[3..]);
         } else if (std.mem.eql(u8, subcommand, "trust")) {
-            try cmdPeerTrust(allocator, args[3..]);
+            try cmdPeerTrust(io, environ, allocator, args[3..]);
         } else {
             try json.emitError("unknown_command", "Unknown peer command. Use: add, list, remove, trust");
             std.process.exit(1);
         }
     } else if (std.mem.eql(u8, command, "send")) {
-        try cmdSend(allocator, args[2..]);
+        try cmdSend(io, environ, allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "receive")) {
-        try cmdReceive(allocator, args[2..]);
+        try cmdReceive(io, environ, allocator, args[2..]);
     } else {
         try json.emitError("unknown_command", "Unknown command. Use: id, peer, send, receive");
         std.process.exit(1);
@@ -92,20 +91,20 @@ fn emitUsageError() !void {
 }
 
 /// Initialize a new identity
-fn cmdIdInit(allocator: std.mem.Allocator) !void {
+fn cmdIdInit(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !void {
     // Check if identity already exists
-    const exists = identity_storage.identityExists(allocator) catch false;
+    const exists = identity_storage.identityExists(io, environ, allocator) catch false;
     if (exists) {
         try json.emitError("identity_exists", "Identity already exists. Delete ~/.zend/identity to create a new one.");
         std.process.exit(1);
     }
 
     // Generate new identity
-    var identity = keypair.generateIdentity();
+    var identity = keypair.generateIdentity(io);
     defer identity.wipe();
 
     // Save to disk
-    identity_storage.saveIdentity(allocator, &identity) catch |err| {
+    identity_storage.saveIdentity(io, environ, allocator, &identity) catch |err| {
         try json.emitError("save_error", @errorName(err));
         std.process.exit(1);
     };
@@ -121,8 +120,8 @@ fn cmdIdInit(allocator: std.mem.Allocator) !void {
 }
 
 /// Show current identity
-fn cmdIdShow(allocator: std.mem.Allocator) !void {
-    var identity = identity_storage.loadIdentity(allocator) catch |err| {
+fn cmdIdShow(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !void {
+    var identity = identity_storage.loadIdentity(io, environ, allocator) catch |err| {
         if (err == error.FileNotFound) {
             try json.emitError("no_identity", "No identity found. Run 'zend id init' first.");
         } else {
@@ -143,7 +142,7 @@ fn cmdIdShow(allocator: std.mem.Allocator) !void {
 }
 
 /// Add a new peer
-fn cmdPeerAdd(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn cmdPeerAdd(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 3) {
         try json.emitError("usage", "Usage: zend peer add <name> <pubkey> <address>");
         std.process.exit(1);
@@ -164,10 +163,10 @@ fn cmdPeerAdd(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var manager = peer_manager.PeerManager.init(allocator);
     defer manager.deinit();
 
-    peer_storage.loadPeers(allocator, &manager) catch {};
+    peer_storage.loadPeers(io, environ, allocator, &manager) catch {};
 
     // Add new peer
-    manager.addPeer(name, public_key, address) catch |err| {
+    manager.addPeer(io, name, public_key, address) catch |err| {
         if (err == error.PeerAlreadyExists) {
             try json.emitError("peer_exists", "A peer with this name already exists");
         } else {
@@ -177,7 +176,7 @@ fn cmdPeerAdd(allocator: std.mem.Allocator, args: []const []const u8) !void {
     };
 
     // Save peers
-    peer_storage.savePeers(allocator, &manager) catch |err| {
+    peer_storage.savePeers(io, environ, allocator, &manager) catch |err| {
         try json.emitError("save_error", @errorName(err));
         std.process.exit(1);
     };
@@ -189,18 +188,17 @@ fn cmdPeerAdd(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 /// List all peers
-fn cmdPeerList(allocator: std.mem.Allocator) !void {
+fn cmdPeerList(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) !void {
     var manager = peer_manager.PeerManager.init(allocator);
     defer manager.deinit();
 
-    peer_storage.loadPeers(allocator, &manager) catch {};
+    peer_storage.loadPeers(io, environ, allocator, &manager) catch {};
 
     const peers = manager.listPeers();
 
     // Build JSON array in buffer then write to stdout
     var buffer: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buffer);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(&buffer);
 
     try writer.writeAll("{\"event\":\"peer_list\",\"peers\":[\n");
 
@@ -247,12 +245,12 @@ fn cmdPeerList(allocator: std.mem.Allocator) !void {
 
     try writer.writeAll("]}\n");
 
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll(fbs.getWritten()) catch {};
+    const stdout = std.Io.File.stdout();
+    stdout.writeStreamingAll(io, writer.buffered()) catch {};
 }
 
 /// Remove a peer
-fn cmdPeerRemove(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn cmdPeerRemove(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 1) {
         try json.emitError("usage", "Usage: zend peer remove <name>");
         std.process.exit(1);
@@ -263,7 +261,7 @@ fn cmdPeerRemove(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var manager = peer_manager.PeerManager.init(allocator);
     defer manager.deinit();
 
-    peer_storage.loadPeers(allocator, &manager) catch {};
+    peer_storage.loadPeers(io, environ, allocator, &manager) catch {};
 
     manager.removePeer(name) catch |err| {
         if (err == error.PeerNotFound) {
@@ -274,7 +272,7 @@ fn cmdPeerRemove(allocator: std.mem.Allocator, args: []const []const u8) !void {
         std.process.exit(1);
     };
 
-    peer_storage.savePeers(allocator, &manager) catch |err| {
+    peer_storage.savePeers(io, environ, allocator, &manager) catch |err| {
         try json.emitError("save_error", @errorName(err));
         std.process.exit(1);
     };
@@ -283,7 +281,7 @@ fn cmdPeerRemove(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 /// Update peer trust state
-fn cmdPeerTrust(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn cmdPeerTrust(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
         try json.emitError("usage", "Usage: zend peer trust <name> <trusted|blocked>");
         std.process.exit(1);
@@ -304,7 +302,7 @@ fn cmdPeerTrust(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var manager = peer_manager.PeerManager.init(allocator);
     defer manager.deinit();
 
-    peer_storage.loadPeers(allocator, &manager) catch {};
+    peer_storage.loadPeers(io, environ, allocator, &manager) catch {};
 
     manager.updateTrust(name, trust) catch |err| {
         if (err == error.PeerNotFound) {
@@ -315,7 +313,7 @@ fn cmdPeerTrust(allocator: std.mem.Allocator, args: []const []const u8) !void {
         std.process.exit(1);
     };
 
-    peer_storage.savePeers(allocator, &manager) catch |err| {
+    peer_storage.savePeers(io, environ, allocator, &manager) catch |err| {
         try json.emitError("save_error", @errorName(err));
         std.process.exit(1);
     };
@@ -324,7 +322,7 @@ fn cmdPeerTrust(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 /// Send a file to a peer
-fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn cmdSend(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 2) {
         try json.emitError("usage", "Usage: zend send <file> <peer-name>");
         std.process.exit(1);
@@ -334,7 +332,7 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const peer_name = args[1];
 
     // Load identity
-    var identity = identity_storage.loadIdentity(allocator) catch |err| {
+    var identity = identity_storage.loadIdentity(io, environ, allocator) catch |err| {
         if (err == error.FileNotFound) {
             try json.emitError("no_identity", "No identity found. Run 'zend id init' first.");
         } else {
@@ -348,7 +346,7 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var manager = peer_manager.PeerManager.init(allocator);
     defer manager.deinit();
 
-    peer_storage.loadPeers(allocator, &manager) catch {};
+    peer_storage.loadPeers(io, environ, allocator, &manager) catch {};
 
     // Find peer
     const peer = manager.findByName(peer_name) orelse {
@@ -361,15 +359,15 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Get file size
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
         try json.emitError("file_error", @errorName(err));
         std.process.exit(1);
     };
-    const file_size = file.getEndPos() catch |err| {
+    const file_size = file.length(io) catch |err| {
         try json.emitError("file_error", @errorName(err));
         std.process.exit(1);
     };
-    file.close();
+    file.close(io);
 
     g_total_size = file_size;
     g_last_progress_percent = 0;
@@ -378,7 +376,7 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try json.emitConnecting(peer_name, peer.address);
 
     // Connect to peer
-    var secure_channel = zend.connectToPeer(peer.address, &identity, peer.public_key) catch |err| {
+    var secure_channel = zend.connectToPeer(io, peer.address, &identity, peer.public_key) catch |err| {
         try json.emitError("connect_error", @errorName(err));
         std.process.exit(1);
     };
@@ -391,13 +389,13 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try json.emitTransferStart(filename, file_size, peer_name);
 
     // Send file
-    transfer.sendFile(&secure_channel, file_path, progressCallback) catch |err| {
+    transfer.sendFile(io, &secure_channel, file_path, progressCallback) catch |err| {
         try json.emitError("transfer_error", @errorName(err));
         std.process.exit(1);
     };
 
     // Compute hash for output
-    const hash = transfer.computeFileHash(file_path) catch |err| {
+    const hash = transfer.computeFileHash(io, file_path) catch |err| {
         try json.emitError("hash_error", @errorName(err));
         std.process.exit(1);
     };
@@ -407,7 +405,7 @@ fn cmdSend(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 /// Receive files from peers
-fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn cmdReceive(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, args: []const []const u8) !void {
     var port: u16 = tcp.default_port;
     var output_dir: []const u8 = ".";
 
@@ -435,7 +433,7 @@ fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Load identity
-    var identity = identity_storage.loadIdentity(allocator) catch |err| {
+    var identity = identity_storage.loadIdentity(io, environ, allocator) catch |err| {
         if (err == error.FileNotFound) {
             try json.emitError("no_identity", "No identity found. Run 'zend id init' first.");
         } else {
@@ -446,14 +444,14 @@ fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
     defer identity.wipe();
 
     // Start listening
-    var server = tcp.TcpServer.listen(port) catch |err| {
+    var server = tcp.TcpServer.listen(io, port) catch |err| {
         try json.emitError("listen_error", @errorName(err));
         std.process.exit(1);
     };
     defer server.close();
 
     // Ensure output directory exists.
-    std.fs.cwd().makePath(output_dir) catch |err| {
+    std.Io.Dir.cwd().createDirPath(io, output_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
             try json.emitError("output_dir_error", @errorName(err));
             std.process.exit(1);
@@ -477,14 +475,19 @@ fn cmdReceive(allocator: std.mem.Allocator, args: []const []const u8) !void {
         g_total_size = 0;
         g_last_progress_percent = 0;
 
-        const filename = transfer.receiveFile(&secure_channel, output_dir, allocator, progressCallback) catch |err| {
+        const filename = transfer.receiveFile(io, &secure_channel, output_dir, allocator, progressCallback) catch |err| {
             try json.emitError("receive_error", @errorName(err));
             continue;
         };
         defer allocator.free(filename);
 
         // Compute hash of received file
-        const hash = transfer.computeFileHash(filename) catch |err| {
+        const output_path = std.fs.path.join(allocator, &.{ output_dir, filename }) catch |err| {
+            try json.emitError("path_error", @errorName(err));
+            continue;
+        };
+        defer allocator.free(output_path);
+        const hash = transfer.computeFileHash(io, output_path) catch |err| {
             try json.emitError("hash_error", @errorName(err));
             continue;
         };

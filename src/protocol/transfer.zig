@@ -32,28 +32,31 @@ pub const ProgressCallback = *const fn (bytes_transferred: u64, total_bytes: u64
 
 /// Send a file to a peer
 pub fn sendFile(
+    io: std.Io,
     secure_channel: *channel.SecureChannel,
     file_path: []const u8,
     progress_callback: ?ProgressCallback,
 ) !void {
     // Open the file
-    const file = try std.fs.cwd().openFile(file_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, file_path, .{});
+    defer file.close(io);
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(io);
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
 
     // Compute file hash
     var hasher = Sha256.init(.{});
     var hash_buf: [8192]u8 = undefined;
     while (true) {
-        const bytes_read = try file.read(&hash_buf);
+        const bytes_read = try file_reader.interface.readSliceShort(&hash_buf);
         if (bytes_read == 0) break;
         hasher.update(hash_buf[0..bytes_read]);
     }
     const file_hash = hasher.finalResult();
 
     // Reset file position
-    try file.seekTo(0);
+    try file_reader.seekTo(0);
 
     // Extract filename from path
     const filename = std.fs.path.basename(file_path);
@@ -98,9 +101,8 @@ pub fn sendFile(
 
     while (bytes_sent < file_size) {
         const to_read = @min(default_chunk_size, file_size - bytes_sent);
-        const bytes_read = try file.readAll(chunk_buf[0..to_read]);
-
-        if (bytes_read == 0) break;
+        try file_reader.interface.readSliceAll(chunk_buf[0..to_read]);
+        const bytes_read = to_read;
 
         const chunk = messages.Chunk{
             .index = chunk_index,
@@ -140,6 +142,7 @@ pub fn sendFile(
 
 /// Receive a file from a peer
 pub fn receiveFile(
+    io: std.Io,
     secure_channel: *channel.SecureChannel,
     output_dir: []const u8,
     allocator: std.mem.Allocator,
@@ -161,8 +164,11 @@ pub fn receiveFile(
     defer allocator.free(output_path);
 
     // Open output file
-    const output_file = try std.fs.cwd().createFile(output_path, .{});
-    defer output_file.close();
+    const output_file = try std.Io.Dir.cwd().createFile(io, output_path, .{});
+    defer output_file.close(io);
+    var output_buffer: [8192]u8 = undefined;
+    var output_writer = output_file.writer(io, &output_buffer);
+    defer output_writer.interface.flush() catch {};
 
     // Send accept
     var accept_buf: [8]u8 = undefined;
@@ -193,7 +199,7 @@ pub fn receiveFile(
         }
 
         // Write to file
-        try output_file.writeAll(chunk.data);
+        try output_writer.interface.writeAll(chunk.data);
 
         // Update hash
         hasher.update(chunk.data);
@@ -233,15 +239,17 @@ pub fn receiveFile(
 }
 
 /// Compute SHA-256 hash of a file
-pub fn computeFileHash(file_path: []const u8) ![Sha256.digest_length]u8 {
-    const file = try std.fs.cwd().openFile(file_path, .{});
-    defer file.close();
+pub fn computeFileHash(io: std.Io, file_path: []const u8) ![Sha256.digest_length]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, file_path, .{});
+    defer file.close(io);
 
     var hasher = Sha256.init(.{});
     var buf: [8192]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
 
     while (true) {
-        const bytes_read = try file.read(&buf);
+        const bytes_read = try file_reader.interface.readSliceShort(&buf);
         if (bytes_read == 0) break;
         hasher.update(buf[0..bytes_read]);
     }
@@ -258,16 +266,16 @@ test "compute file hash" {
     defer tmp_dir.cleanup();
 
     const test_content = "Hello, World! This is a test file for hashing.";
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll(test_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(std.testing.io, "test.txt", .{});
+    try file.writeStreamingAll(std.testing.io, test_content);
+    file.close(std.testing.io);
 
     // Get the path
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.txt");
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.txt", allocator);
     defer allocator.free(path);
 
     // Compute hash
-    const hash = try computeFileHash(path);
+    const hash = try computeFileHash(std.testing.io, path);
 
     // Verify it's not all zeros
     var all_zero = true;

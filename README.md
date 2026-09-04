@@ -24,7 +24,7 @@ All cryptography uses Zig's standard library (`std.crypto`), which wraps audited
 
 ## Building
 
-Requires Zig 0.15.2 or later.
+Requires Zig 0.16.0 or later.
 
 ```bash
 # Build

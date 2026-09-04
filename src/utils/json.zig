@@ -25,20 +25,26 @@ pub const EventType = enum {
 
 /// Stdout writer buffer (thread-local for safety)
 threadlocal var stdout_buffer: [8192]u8 = undefined;
+threadlocal var current_io: ?std.Io = null;
+
+/// Configure the I/O implementation used by CLI event emitters.
+pub fn init(io: std.Io) void {
+    current_io = io;
+}
 
 /// Write a JSON event to stdout
 fn writeEvent(event_type: EventType, fields: anytype) !void {
     // Build JSON in buffer first, then write all at once
-    var fbs = std.io.fixedBufferStream(&stdout_buffer);
-    try writeEventTo(fbs.writer(), event_type, fields);
+    var writer = std.Io.Writer.fixed(&stdout_buffer);
+    try writeEventTo(&writer, event_type, fields);
 
     // Write to stdout
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll(fbs.getWritten()) catch {};
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(current_io orelse return error.IoNotInitialized, writer.buffered());
 }
 
 /// Write a JSON event to a specific writer (useful for testing)
-pub fn writeEventTo(writer: anytype, event_type: EventType, fields: anytype) !void {
+pub fn writeEventTo(writer: *std.Io.Writer, event_type: EventType, fields: anytype) !void {
     try writer.writeAll("{\"event\":\"");
     try writer.writeAll(@tagName(event_type));
     try writer.writeAll("\"");
@@ -57,7 +63,7 @@ pub fn writeEventTo(writer: anytype, event_type: EventType, fields: anytype) !vo
 }
 
 /// Write a JSON value
-fn writeValue(writer: anytype, value: anytype) !void {
+fn writeValue(writer: *std.Io.Writer, value: anytype) !void {
     const T = @TypeOf(value);
 
     switch (@typeInfo(T)) {
@@ -131,7 +137,7 @@ fn writeValue(writer: anytype, value: anytype) !void {
 }
 
 /// Write a JSON-escaped string
-fn writeString(writer: anytype, str: []const u8) !void {
+fn writeString(writer: *std.Io.Writer, str: []const u8) !void {
     try writer.writeAll("\"");
     for (str) |c| {
         switch (c) {
@@ -221,47 +227,47 @@ pub fn emitError(code: []const u8, message: []const u8) !void {
 
 /// Write raw JSON string to stdout (for peer list)
 pub fn emitRaw(data: []const u8) !void {
-    const stdout = std.fs.File.stdout();
-    stdout.writeAll(data) catch {};
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(current_io orelse return error.IoNotInitialized, data);
 }
 
 // Tests
 test "json string escaping" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
-    try writeString(fbs.writer(), "hello\"world\\test\n");
-    const result = fbs.getWritten();
+    try writeString(&writer, "hello\"world\\test\n");
+    const result = writer.buffered();
 
     try std.testing.expectEqualSlices(u8, "\"hello\\\"world\\\\test\\n\"", result);
 }
 
 test "write event with fields" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
-    try writeEventTo(fbs.writer(), .identity_created, .{ .public_key = "abc123", .fingerprint = "def456" });
-    const result = fbs.getWritten();
+    try writeEventTo(&writer, .identity_created, .{ .public_key = "abc123", .fingerprint = "def456" });
+    const result = writer.buffered();
 
     try std.testing.expectEqualSlices(u8, "{\"event\":\"identity_created\",\"public_key\":\"abc123\",\"fingerprint\":\"def456\"}\n", result);
 }
 
 test "write progress event" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
-    try writeEventTo(fbs.writer(), .progress, .{ .bytes = @as(u64, 65536), .percent = @as(f64, 42.50) });
-    const result = fbs.getWritten();
+    try writeEventTo(&writer, .progress, .{ .bytes = @as(u64, 65536), .percent = @as(f64, 42.50) });
+    const result = writer.buffered();
 
     try std.testing.expectEqualSlices(u8, "{\"event\":\"progress\",\"bytes\":65536,\"percent\":42.50}\n", result);
 }
 
 test "write error event" {
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
-    try writeEventTo(fbs.writer(), .@"error", .{ .code = "invalid_file", .message = "File not found" });
-    const result = fbs.getWritten();
+    try writeEventTo(&writer, .@"error", .{ .code = "invalid_file", .message = "File not found" });
+    const result = writer.buffered();
 
     try std.testing.expectEqualSlices(u8, "{\"event\":\"error\",\"code\":\"invalid_file\",\"message\":\"File not found\"}\n", result);
 }

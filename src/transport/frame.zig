@@ -14,18 +14,16 @@ pub const header_size: usize = 4;
 
 /// Framed connection wrapper
 pub const FramedConnection = struct {
-    conn: *tcp.TcpConnection,
     read_buffer: [max_frame_size + header_size]u8 = undefined,
 
     /// Initialize a framed connection
-    pub fn init(conn: *tcp.TcpConnection) FramedConnection {
-        return FramedConnection{
-            .conn = conn,
-        };
+    pub fn init() FramedConnection {
+        return .{};
     }
 
     /// Send a framed message
-    pub fn send(self: *FramedConnection, data: []const u8) !void {
+    pub fn send(self: *FramedConnection, conn: *tcp.TcpConnection, data: []const u8) !void {
+        _ = self;
         if (data.len > max_frame_size) {
             return error.FrameTooLarge;
         }
@@ -34,16 +32,16 @@ pub const FramedConnection = struct {
         var header: [header_size]u8 = undefined;
         std.mem.writeInt(u32, &header, @intCast(data.len), .big);
 
-        try self.conn.writeAll(&header);
-        try self.conn.writeAll(data);
+        try conn.writeAll(&header);
+        try conn.writeAll(data);
     }
 
     /// Receive a framed message
     /// Returns the message payload (slice into internal buffer)
-    pub fn receive(self: *FramedConnection) ![]u8 {
+    pub fn receive(self: *FramedConnection, conn: *tcp.TcpConnection) ![]u8 {
         // Read length header
         var header: [header_size]u8 = undefined;
-        const header_read = try self.conn.readAll(&header);
+        const header_read = try conn.readAll(&header);
         if (header_read < header_size) {
             return error.ConnectionClosed;
         }
@@ -59,7 +57,7 @@ pub const FramedConnection = struct {
         }
 
         // Read payload
-        const payload_read = try self.conn.readAll(self.read_buffer[0..length]);
+        const payload_read = try conn.readAll(self.read_buffer[0..length]);
         if (payload_read < length) {
             return error.ConnectionClosed;
         }

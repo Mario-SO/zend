@@ -11,35 +11,30 @@ const identity_storage = @import("../identity/storage.zig");
 pub const peers_file_name = "peers.json";
 
 /// Get the peers file path
-pub fn getPeersPath(allocator: std.mem.Allocator) ![]u8 {
-    const config_dir = try identity_storage.getConfigDir(allocator);
+pub fn getPeersPath(environ: *const std.process.Environ.Map, allocator: std.mem.Allocator) ![]u8 {
+    const config_dir = try identity_storage.getConfigDir(environ, allocator);
     defer allocator.free(config_dir);
 
     return std.fs.path.join(allocator, &.{ config_dir, peers_file_name });
 }
 
 /// Save peers to disk as JSON
-pub fn savePeers(allocator: std.mem.Allocator, peer_manager: *const manager.PeerManager) !void {
+pub fn savePeers(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, peer_manager: *const manager.PeerManager) !void {
     // Ensure config directory exists
-    const config_dir = try identity_storage.getConfigDir(allocator);
+    const config_dir = try identity_storage.getConfigDir(environ, allocator);
     defer allocator.free(config_dir);
 
-    std.fs.cwd().makePath(config_dir) catch |err| {
-        if (err != error.PathAlreadyExists) {
-            return err;
-        }
-    };
+    try std.Io.Dir.cwd().createDirPath(io, config_dir);
 
-    const path = try getPeersPath(allocator);
+    const path = try getPeersPath(environ, allocator);
     defer allocator.free(path);
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
 
     // Build JSON in memory first for efficiency
     var buffer: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buffer);
-    const writer = fbs.writer();
+    var writer = std.Io.Writer.fixed(&buffer);
 
     try writer.writeAll("[\n");
 
@@ -49,7 +44,7 @@ pub fn savePeers(allocator: std.mem.Allocator, peer_manager: *const manager.Peer
 
         // Name
         try writer.writeAll("    \"name\": \"");
-        try writeJsonString(writer, peer.name);
+        try writeJsonString(&writer, peer.name);
         try writer.writeAll("\",\n");
 
         // Public key (base64)
@@ -61,7 +56,7 @@ pub fn savePeers(allocator: std.mem.Allocator, peer_manager: *const manager.Peer
 
         // Address
         try writer.writeAll("    \"address\": \"");
-        try writeJsonString(writer, peer.address);
+        try writeJsonString(&writer, peer.address);
         try writer.writeAll("\",\n");
 
         // Fingerprint
@@ -86,25 +81,27 @@ pub fn savePeers(allocator: std.mem.Allocator, peer_manager: *const manager.Peer
     }
 
     try writer.writeAll("]\n");
-    try file.writeAll(fbs.getWritten());
+    try file.writeStreamingAll(io, writer.buffered());
 }
 
 /// Load peers from disk
-pub fn loadPeers(allocator: std.mem.Allocator, peer_manager: *manager.PeerManager) !void {
-    const path = try getPeersPath(allocator);
+pub fn loadPeers(io: std.Io, environ: *const std.process.Environ.Map, allocator: std.mem.Allocator, peer_manager: *manager.PeerManager) !void {
+    const path = try getPeersPath(environ, allocator);
     defer allocator.free(path);
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             // No peers file yet, that's fine
             return;
         }
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
     // Read entire file
-    const content = try file.readToEndAlloc(allocator, 1024 * 1024); // 1MB max
+    var read_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &read_buffer);
+    const content = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
     defer allocator.free(content);
 
     // Parse JSON
@@ -171,7 +168,7 @@ fn parseTrust(value: ?std.json.Value) manager.TrustLevel {
 }
 
 /// Write a JSON-escaped string
-fn writeJsonString(writer: anytype, str: []const u8) !void {
+fn writeJsonString(writer: *std.Io.Writer, str: []const u8) !void {
     for (str) |c| {
         switch (c) {
             '"' => try writer.writeAll("\\\""),
@@ -193,7 +190,10 @@ fn writeJsonString(writer: anytype, str: []const u8) !void {
 // Tests
 test "peers path" {
     const allocator = std.testing.allocator;
-    const path = try getPeersPath(allocator);
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("HOME", "/tmp/zend-test-home");
+    const path = try getPeersPath(&environ, allocator);
     defer allocator.free(path);
 
     try std.testing.expect(std.mem.endsWith(u8, path, "peers.json"));

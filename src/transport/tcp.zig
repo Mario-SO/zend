@@ -3,30 +3,33 @@
 //! Provides basic TCP networking primitives for zend.
 
 const std = @import("std");
-const posix = std.posix;
+const net = std.Io.net;
 
 /// Default zend port
 pub const default_port: u16 = 7654;
 
 /// TCP connection wrapper
 pub const TcpConnection = struct {
-    stream: std.net.Stream,
+    io: std.Io,
+    stream: net.Stream,
 
     /// Close the connection
     pub fn close(self: *TcpConnection) void {
-        self.stream.close();
+        self.stream.close(self.io);
     }
 
     /// Read data from connection
     pub fn read(self: *TcpConnection, buffer: []u8) !usize {
-        return self.stream.read(buffer);
+        var reader = self.stream.reader(self.io, &.{});
+        return reader.interface.readSliceShort(buffer);
     }
 
     /// Read exactly n bytes (blocks until buffer is full or EOF)
     pub fn readAll(self: *TcpConnection, buffer: []u8) !usize {
+        var reader = self.stream.reader(self.io, &.{});
         var total_read: usize = 0;
         while (total_read < buffer.len) {
-            const bytes_read = self.stream.read(buffer[total_read..]) catch |err| {
+            const bytes_read = reader.interface.readSliceShort(buffer[total_read..]) catch |err| {
                 if (total_read > 0) return total_read;
                 return err;
             };
@@ -38,75 +41,72 @@ pub const TcpConnection = struct {
 
     /// Write data to connection
     pub fn write(self: *TcpConnection, data: []const u8) !usize {
-        return self.stream.write(data);
+        var writer = self.stream.writer(self.io, &.{});
+        return writer.interface.writeVec(&.{data});
     }
 
     /// Write all data to connection
     pub fn writeAll(self: *TcpConnection, data: []const u8) !void {
-        var total_written: usize = 0;
-        while (total_written < data.len) {
-            const bytes_written = try self.stream.write(data[total_written..]);
-            if (bytes_written == 0) return error.ConnectionClosed;
-            total_written += bytes_written;
-        }
-    }
-
-    /// Get peer address as string
-    pub fn getPeerAddress(self: *const TcpConnection, buffer: []u8) ![]const u8 {
-        const addr = self.stream.getRemoteAddress();
-        return std.fmt.bufPrint(buffer, "{}", .{addr}) catch return error.BufferTooSmall;
+        var writer = self.stream.writer(self.io, &.{});
+        try writer.interface.writeAll(data);
     }
 };
 
 /// TCP client - connect to a peer
 pub const TcpClient = struct {
     /// Connect to a peer at the given address
-    pub fn connect(address: []const u8) !TcpConnection {
+    pub fn connect(io: std.Io, address: []const u8) !TcpConnection {
         // Parse address (host:port format)
         const parsed = parseAddress(address) catch {
             return error.InvalidAddress;
         };
 
-        const stream = std.net.tcpConnectToHost(std.heap.page_allocator, parsed.host, parsed.port) catch {
+        const host = net.HostName.init(parsed.host) catch return error.InvalidAddress;
+        const stream = host.connect(io, parsed.port, .{
+            .mode = .stream,
+            .protocol = .tcp,
+        }) catch {
             return error.ConnectionFailed;
         };
 
-        return TcpConnection{ .stream = stream };
+        return TcpConnection{ .io = io, .stream = stream };
     }
 };
 
 /// TCP server - listen for incoming connections
 pub const TcpServer = struct {
-    server: std.net.Server,
+    io: std.Io,
+    server: net.Server,
+    port: u16,
 
     /// Start listening on the given port
-    pub fn listen(port: u16) !TcpServer {
-        const address = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, port);
-        const server = address.listen(.{
+    pub fn listen(io: std.Io, port: u16) !TcpServer {
+        const address: net.IpAddress = .{ .ip4 = .unspecified(port) };
+        const server = address.listen(io, .{
             .reuse_address = true,
         }) catch {
             return error.ListenFailed;
         };
 
-        return TcpServer{ .server = server };
+        return TcpServer{ .io = io, .server = server, .port = port };
     }
 
     /// Accept an incoming connection
     pub fn accept(self: *TcpServer) !TcpConnection {
-        const conn = self.server.accept() catch {
+        const stream = self.server.accept(self.io) catch {
             return error.AcceptFailed;
         };
-        return TcpConnection{ .stream = conn.stream };
+        return TcpConnection{ .io = self.io, .stream = stream };
     }
 
     /// Get the port we're listening on
     pub fn getPort(self: *const TcpServer) u16 {
-        return self.server.listen_address.getPort();
+        return self.port;
     }
 
     /// Close the server
     pub fn close(self: *TcpServer) void {
-        self.server.deinit();
+        self.server.deinit(self.io);
     }
 };
 

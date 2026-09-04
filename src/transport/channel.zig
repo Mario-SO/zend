@@ -43,14 +43,14 @@ pub const SecureChannel = struct {
         @memcpy(self.send_buffer[data.len..][0..noise.tag_size], &tag);
 
         // Send framed message
-        try self.framed.send(self.send_buffer[0 .. data.len + noise.tag_size]);
+        try self.framed.send(&self.conn, self.send_buffer[0 .. data.len + noise.tag_size]);
     }
 
     /// Receive and decrypt data
     /// Returns decrypted data (slice into internal buffer)
     pub fn receive(self: *SecureChannel) ![]u8 {
         // Receive framed message
-        const encrypted = try self.framed.receive();
+        const encrypted = try self.framed.receive(&self.conn);
 
         if (encrypted.len < noise.tag_size) {
             return error.MessageTooShort;
@@ -80,27 +80,28 @@ pub const SecureChannel = struct {
 
 /// Perform handshake as initiator and return secure channel
 pub fn connectSecure(
+    io: std.Io,
     address: []const u8,
     local_x25519_secret: [noise.key_size]u8,
     remote_x25519_public: [noise.key_size]u8,
 ) !SecureChannel {
     // Connect
-    var conn = try tcp.TcpClient.connect(address);
+    var conn = try tcp.TcpClient.connect(io, address);
     errdefer conn.close();
 
-    var framed = frame.FramedConnection.init(&conn);
+    var framed = frame.FramedConnection.init();
 
     // Initialize handshake
-    var handshake = noise.HandshakeState.initInitiator(local_x25519_secret, remote_x25519_public);
+    var handshake = noise.HandshakeState.initInitiator(conn.io, local_x25519_secret, remote_x25519_public);
     defer handshake.wipe();
 
     // Send message 1
     var msg1_buf: [noise.message1_size]u8 = undefined;
     const msg1 = try handshake.writeMessage1(&msg1_buf);
-    try framed.send(msg1);
+    try framed.send(&conn, msg1);
 
     // Receive message 2
-    const msg2 = try framed.receive();
+    const msg2 = try framed.receive(&conn);
     try handshake.readMessage2(msg2);
 
     // Finalize
@@ -124,20 +125,20 @@ pub fn acceptSecure(
     var conn = try server.accept();
     errdefer conn.close();
 
-    var framed = frame.FramedConnection.init(&conn);
+    var framed = frame.FramedConnection.init();
 
     // Initialize handshake
-    var handshake = noise.HandshakeState.initResponder(local_x25519_secret);
+    var handshake = noise.HandshakeState.initResponder(conn.io, local_x25519_secret);
     defer handshake.wipe();
 
     // Receive message 1
-    const msg1 = try framed.receive();
+    const msg1 = try framed.receive(&conn);
     try handshake.readMessage1(msg1);
 
     // Send message 2
     var msg2_buf: [noise.message2_size]u8 = undefined;
     const msg2 = try handshake.writeMessage2(&msg2_buf);
-    try framed.send(msg2);
+    try framed.send(&conn, msg2);
 
     // Finalize
     const result = handshake.finalize();
@@ -156,7 +157,7 @@ test "secure channel cipher integration" {
     // This tests the cipher state that would be used by SecureChannel
     var key1: [noise.key_size]u8 = undefined;
     var key2: [noise.key_size]u8 = undefined;
-    std.crypto.random.bytes(&key1);
+    std.testing.io.random(&key1);
     @memcpy(&key2, &key1);
 
     var sender = noise.CipherState.init(key1);

@@ -47,8 +47,8 @@ pub const Identity = struct {
 };
 
 /// Generate a new identity (Ed25519 keypair)
-pub fn generateIdentity() Identity {
-    const kp = Ed25519.KeyPair.generate();
+pub fn generateIdentity(io: std.Io) Identity {
+    const kp = Ed25519.KeyPair.generate(io);
     return Identity{
         .public_key = kp.public_key.toBytes(),
         .secret_key = kp.secret_key.toBytes(),
@@ -120,7 +120,7 @@ pub fn decodeBase64(input: []const u8, output: []u8) ![]u8 {
 
 // Tests
 test "generate identity" {
-    var id = generateIdentity();
+    var id = generateIdentity(std.testing.io);
     defer id.wipe();
 
     // Public key should not be all zeros
@@ -135,7 +135,7 @@ test "generate identity" {
 }
 
 test "fingerprint generation" {
-    var id = generateIdentity();
+    var id = generateIdentity(std.testing.io);
     defer id.wipe();
 
     const fp = id.fingerprint();
@@ -150,7 +150,7 @@ test "fingerprint generation" {
 }
 
 test "ed25519 to x25519 conversion" {
-    var id = generateIdentity();
+    var id = generateIdentity(std.testing.io);
     defer id.wipe();
 
     const x_public = try id.x25519PublicKey();
@@ -163,9 +163,9 @@ test "ed25519 to x25519 conversion" {
 }
 
 test "x25519 key agreement" {
-    var id1 = generateIdentity();
+    var id1 = generateIdentity(std.testing.io);
     defer id1.wipe();
-    var id2 = generateIdentity();
+    var id2 = generateIdentity(std.testing.io);
     defer id2.wipe();
 
     const x1_pub = try id1.x25519PublicKey();
